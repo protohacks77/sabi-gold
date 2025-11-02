@@ -117,34 +117,89 @@ function App() {
           }
 
           @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-30px); }
+            from { opacity: 0; transform: translateY(-20px); }
             to { opacity: 1; transform: translateY(0); }
           }
           @keyframes slideInLeft {
-            from { opacity: 0; transform: translateX(-30px); }
+            from { opacity: 0; transform: translateX(-20px); }
             to { opacity: 1; transform: translateX(0); }
           }
            @keyframes slideInRight {
-            from { opacity: 0; transform: translateX(30px); }
+            from { opacity: 0; transform: translateX(20px); }
             to { opacity: 1; transform: translateX(0); }
           }
           
           .animate-slide-down {
-            animation: slideDown 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+            animation: slideDown 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
           }
           .animate-slide-in-left {
-            animation: slideInLeft 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+            animation: slideInLeft 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
           }
           .animate-slide-in-right {
              animation: slideInRight 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
           }
 
           @keyframes letterSlideIn {
-            from { opacity: 0; transform: translateX(-15px); }
-            to { opacity: 1; transform: translateX(0); }
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
           }
           .animate-letter-slide {
+            display: inline-block;
             animation: letterSlideIn 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+          }
+          
+          /* SIMPLIFIED CLOCK STYLES */
+          .flip-clock-container {
+          }
+          
+          .digit-card {
+            display: inline-flex;
+            position: relative;
+            width: .67em;
+            height: 1em;
+            font-size: inherit;
+            background: #111;
+            color: #f1f1f1;
+            border-radius: .15em;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
+            overflow: hidden;
+          }
+
+          .digit-card span {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+          }
+
+          .digit-top {
+            transform: translateY(0);
+          }
+          .digit-bottom {
+            transform: translateY(100%);
+          }
+
+          .digit-top.flipping {
+            transform: translateY(-100%);
+          }
+          .digit-bottom.flipping {
+            transform: translateY(0);
+          }
+
+          .colon-separator {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: .8em;
+            animation: blink 1.5s infinite;
+          }
+          @keyframes blink {
+            50% { opacity: 0; }
           }
         `}
         </style>

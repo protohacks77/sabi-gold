@@ -7,10 +7,13 @@ import LeaveManagement from './dashboard/LeaveManagement';
 import LiveView from './dashboard/LiveView'; 
 import Help from './dashboard/Help';
 import { db, auth } from '../services/firebase';
-import { doc, getDoc, setDoc, collection, query, where, onSnapshot, updateDoc, orderBy } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, onSnapshot, updateDoc, orderBy, Timestamp, getDocs } from 'firebase/firestore';
 // FIX: Removed modular signOut import as it's not available. Using compat version instead.
 import { Icons } from './common/Icons';
-import type { Notification } from '../types';
+import type { Notification, AttendanceLog } from '../types';
+import { runDailyTasks } from '../services/autoTasks';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 type Module = 'Dashboard' | 'Workforce' | 'Reports' | 'Administration' | 'Leave Management' | 'Settings' | 'Help';
 
@@ -23,8 +26,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
     const [pendingLeaveCount, setPendingLeaveCount] = useState(0);
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const [notifications, setNotifications] = useState<Notification[]>([]);
+    const [isPrinting, setIsPrinting] = useState(false);
 
     useEffect(() => {
+        runDailyTasks();
+
         const checkAndSetDefaultSettings = async () => {
             const settingsRef = doc(db, 'app-settings', 'main');
             const docSnap = await getDoc(settingsRef);
@@ -76,6 +82,70 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
         await updateDoc(doc(db, 'notifications', id), { read: true });
     };
 
+    const handlePrintDailyReport = async (notificationId: string) => {
+        setIsPrinting(true);
+        try {
+            // 1. Fetch data for yesterday
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const start = new Date(yesterday);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(yesterday);
+            end.setHours(23, 59, 59, 999);
+
+            const attendanceQuery = query(collection(db, 'attendance'), where('timestamp', '>=', start), where('timestamp', '<=', end));
+            const logsSnapshot = await getDocs(attendanceQuery);
+            const logs = logsSnapshot.docs.map(doc => doc.data() as AttendanceLog);
+
+            const empSnapshot = await getDocs(collection(db, 'employees'));
+            const employeeMap = empSnapshot.docs.reduce((acc, doc) => {
+                acc[doc.id] = doc.data();
+                return acc;
+            }, {} as any);
+            
+            const dailyWork: Record<string, { in?: Date, out?: Date, name: string }> = {};
+            logs.forEach(log => {
+                if (!dailyWork[log.employeeDocId]) {
+                    const emp = employeeMap[log.employeeDocId];
+                    dailyWork[log.employeeDocId] = { name: emp ? `${emp.firstName} ${emp.surname}` : 'Unknown' };
+                }
+                if (log.type === 'in') dailyWork[log.employeeDocId].in = log.timestamp.toDate();
+                else dailyWork[log.employeeDocId].out = log.timestamp.toDate();
+            });
+
+            const reportData = Object.values(dailyWork).map(d => ({
+                name: d.name,
+                login: d.in ? d.in.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' }) : 'N/A',
+                logout: d.out ? d.out.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' }) : 'N/A',
+            }));
+            
+            // 2. Generate PDF
+            const doc = new jsPDF();
+            doc.text(`Daily Attendance Report - ${yesterday.toLocaleDateString()}`, 14, 15);
+            autoTable(doc, {
+                head: [['Employee', 'Login Time', 'Logout Time']],
+                body: reportData.map(r => [r.name, r.login, r.logout]),
+            });
+            
+            // 3. Open in new tab and print
+            const pdfBlob = doc.output('blob');
+            const blobUrl = URL.createObjectURL(pdfBlob);
+            const printWindow = window.open(blobUrl);
+            printWindow?.addEventListener('load', () => {
+                printWindow.print();
+            });
+
+            // 4. Mark notification as read
+            await handleDismissNotification(notificationId);
+
+        } catch (error) {
+            console.error("Failed to generate or print daily report:", error);
+        } finally {
+            setIsPrinting(false);
+        }
+    };
+
+
     const navItems = [
         { name: 'Dashboard', icon: <Icons.Dashboard /> },
         { name: 'Workforce', icon: <Icons.Workforce /> },
@@ -84,6 +154,56 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
         { name: 'Leave Management', icon: <Icons.Leave />, badge: pendingLeaveCount },
         { name: 'Settings', icon: <Icons.Settings /> },
     ];
+
+    const renderNotification = (notif: Notification) => {
+        switch (notif.type) {
+            case 'daily-report-ready':
+                return (
+                    <div key={notif.id} className="bg-blue-900/50 border border-blue-700 rounded-xl p-4 flex items-center justify-between gap-4 animate-fade-in">
+                        <div className="flex items-center gap-3">
+                            <div className="text-blue-400 flex-shrink-0"><Icons.Reports /></div>
+                            <div>
+                                <p className="font-semibold text-blue-300">Daily Report Ready</p>
+                                <p className="text-sm text-blue-400">{notif.message}</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                             <button onClick={() => handlePrintDailyReport(notif.id!)} className="px-3 py-1.5 bg-blue-500/50 hover:bg-blue-500/70 text-white text-xs font-semibold rounded-md flex items-center gap-1.5" disabled={isPrinting}>
+                                <Icons.Print /> {isPrinting ? 'Printing...' : 'Print'}
+                            </button>
+                            <button onClick={() => handleDismissNotification(notif.id!)} className="p-1 rounded-full hover:bg-white/10 text-blue-300 flex-shrink-0"><Icons.X /></button>
+                        </div>
+                    </div>
+                );
+            case 'missed-logout':
+                return (
+                    <div key={notif.id} className="bg-yellow-900/50 border border-yellow-700 rounded-xl p-4 flex items-center justify-between gap-4 animate-fade-in">
+                        <div className="flex items-center gap-3">
+                            <div className="text-yellow-400 flex-shrink-0"><Icons.Warning /></div>
+                            <div>
+                                <p className="font-semibold text-yellow-300">Missed Logout</p>
+                                <p className="text-sm text-yellow-400">{notif.employeeName} {notif.message}</p>
+                            </div>
+                        </div>
+                        <button onClick={() => handleDismissNotification(notif.id!)} className="p-1 rounded-full hover:bg-white/10 text-yellow-300 flex-shrink-0"><Icons.X /></button>
+                    </div>
+                );
+            default: // early-clock-out
+                return (
+                    <div key={notif.id} className="bg-red-900/50 border border-red-700 rounded-xl p-4 flex items-center justify-between gap-4 animate-fade-in">
+                        <div className="flex items-center gap-3">
+                            <div className="text-red-400 flex-shrink-0"><Icons.Warning /></div>
+                            <div>
+                                <p className="font-semibold text-red-300">Early Clock-Out Alert</p>
+                                <p className="text-sm text-red-400">{notif.employeeName} {notif.message}</p>
+                            </div>
+                        </div>
+                        <button onClick={() => handleDismissNotification(notif.id!)} className="p-1 rounded-full hover:bg-white/10 text-red-300 flex-shrink-0"><Icons.X /></button>
+                    </div>
+                );
+        }
+    };
+
 
     return (
         <div className="min-h-screen flex bg-gray-800 font-inter text-gray-200">
@@ -127,22 +247,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
             <main className="flex-1 flex flex-col p-4 sm:p-6 lg:p-8 overflow-auto">
                  {notifications.length > 0 && (
                     <div className="mb-6 space-y-4">
-                        {notifications.map(notif => (
-                            <div key={notif.id} className="bg-red-900/50 border border-red-700 rounded-xl p-4 flex items-center justify-between gap-4 animate-fade-in">
-                                <div className="flex items-center gap-3">
-                                    <div className="text-red-400 flex-shrink-0">
-                                        <Icons.Warning />
-                                    </div>
-                                    <div>
-                                        <p className="font-semibold text-red-300">Early Clock-Out Alert</p>
-                                        <p className="text-sm text-red-400">{notif.employeeName} {notif.message}</p>
-                                    </div>
-                                </div>
-                                <button onClick={() => handleDismissNotification(notif.id!)} className="p-1 rounded-full hover:bg-white/10 text-red-300 flex-shrink-0">
-                                    <Icons.X />
-                                </button>
-                            </div>
-                        ))}
+                        {notifications.map(renderNotification)}
                     </div>
                  )}
                  <header className="flex justify-between items-center mb-6">

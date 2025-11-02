@@ -190,7 +190,7 @@ const LateArrivals: React.FC<LateArrivalsProps> = ({ employees, settings }) => {
                                                     {entry.date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
                                                     {' at '}
                                                     <span className="font-semibold text-red-400">
-                                                        {entry.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        {entry.date.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}
                                                     </span>
                                                </li>
                                             ))}

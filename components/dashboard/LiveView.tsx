@@ -182,11 +182,11 @@ const EmployeeRow: React.FC<{ employee: Employee & { effectiveStatus: StatusFilt
 
     const LastActivity = () => {
         if (employee.effectiveStatus === 'On-Site' && employee.lastLoginTime) {
-            return employee.lastLoginTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return employee.lastLoginTime.toDate().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
         }
         // This is a simplification. A real implementation would query the last logout record.
         if (employee.effectiveStatus === 'Off-Site') {
-            return "Yesterday, 5:10 PM"; 
+            return "Yesterday, 17:10"; 
         }
         return '-';
     };

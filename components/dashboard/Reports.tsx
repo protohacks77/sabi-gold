@@ -137,17 +137,26 @@ const Reports: React.FC = () => {
 
         const report = employees.map(emp => {
             const empLogs = logs.filter(l => l.employeeDocId === emp.id).sort((a,b) => a.timestamp.toMillis() - b.timestamp.toMillis());
-            const dailyWork: Record<string, { in?: Date, out?: Date }> = {};
+            const dailyWork: Record<string, { in?: Date, out?: Date, outNotes?: string }> = {};
+            
             empLogs.forEach(log => {
                 const dateStr = log.timestamp.toDate().toLocaleDateString();
                 if (!dailyWork[dateStr]) dailyWork[dateStr] = {};
-                if (log.type === 'in' && !dailyWork[dateStr].in) dailyWork[dateStr].in = log.timestamp.toDate();
-                else if (log.type === 'out') dailyWork[dateStr].out = log.timestamp.toDate();
+                
+                if (log.type === 'in' && !dailyWork[dateStr].in) {
+                    dailyWork[dateStr].in = log.timestamp.toDate();
+                } else if (log.type === 'out') {
+                    dailyWork[dateStr].out = log.timestamp.toDate();
+                    if (log.notes) {
+                        dailyWork[dateStr].outNotes = log.notes;
+                    }
+                }
             });
 
             let totalDaysWorked = 0, totalOvertimeHours = 0;
-            Object.values(dailyWork).forEach(({ in: inTime, out: outTime }) => {
-                if (inTime && outTime) {
+            Object.values(dailyWork).forEach(({ in: inTime, out: outTime, outNotes }) => {
+                // Exclude days that were automatically clocked out
+                if (inTime && outTime && outNotes !== 'auto clock-out') {
                     totalDaysWorked++;
                     const shiftEndToday = parseTimeString(settings.shiftEnd, inTime);
                     if (outTime > shiftEndToday) {
@@ -155,6 +164,7 @@ const Reports: React.FC = () => {
                     }
                 }
             });
+
             return {
                 employeeName: `${emp.firstName} ${emp.surname}`,
                 totalDaysWorked,
@@ -164,7 +174,7 @@ const Reports: React.FC = () => {
                 totalGrossPay: parseFloat(((totalDaysWorked * settings.dailyRate) + (totalOvertimeHours * settings.overtimeRate)).toFixed(2))
             };
         });
-        setReportData(report.filter(r => r.totalDaysWorked > 0));
+        setReportData(report.filter(r => r.totalDaysWorked > 0 || r.totalOvertimeHours > 0));
     };
 
     const generateOnLeaveReport = async (start: Date, end: Date) => {
@@ -204,7 +214,7 @@ const Reports: React.FC = () => {
                     employeeName: emp ? `${emp.firstName} ${emp.surname}` : 'Unknown',
                     department: emp?.department || '-',
                     date: logDate.toLocaleDateString(),
-                    arrivalTime: logDate.toLocaleTimeString(),
+                    arrivalTime: logDate.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' }),
                     shiftStart: settings.shiftStart,
                     lateBy: `${Math.floor(lateMs / 60000)} mins`
                 };

@@ -29,6 +29,7 @@ export interface AttendanceLog {
   type: 'in' | 'out';
   employeeName?: string; // Denormalized for live feed
   employeePosition?: string; // Denormalized for live feed
+  notes?: 'auto clock-out';
 }
 
 export interface Leave {
@@ -67,7 +68,7 @@ export interface Notification {
   employeeId: string;
   employeeName: string;
   timestamp: Timestamp;
-  type: 'early-clock-out';
+  type: 'early-clock-out' | 'daily-report-ready' | 'missed-logout';
   message: string;
   read: boolean;
 }

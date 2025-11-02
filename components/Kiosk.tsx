@@ -1,23 +1,52 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, memo } from 'react';
 import { db } from '../services/firebase';
 import { collection, getDocs, doc, updateDoc, addDoc, Timestamp, query, orderBy, limit, where, getDoc } from 'firebase/firestore';
-import type { Employee, AttendanceLog, LeaveRequest, Settings } from '../types';
+import type { Employee, AttendanceLog, LeaveRequest, Settings, Leave } from '../types';
 import Spinner from './common/Spinner';
 import { Icons } from './common/Icons';
 import { loadModels, verifyFace } from '../services/faceRecognition';
 import { verifyFingerprint, checkBiometricSupport } from '../services/fingerprintService';
 import Modal from './common/Modal';
 import Toast from './common/Toast';
-import LeaveStatusModal from './LeaveStatusModal';
+import EmployeeProfileModal from './EmployeeProfileModal';
 import { parseTimeString } from '../utils/time';
 
 type KioskView = 'main' | 'selectingMethod' | 'scanning' | 'confirmation';
 type LoginMethod = 'face' | 'fingerprint' | 'pin';
-type AuthPurpose = 'attendance' | 'leaveStatus';
+type AuthPurpose = 'attendance' | 'profile';
 
 interface KioskProps {
   setView: (view: 'kiosk' | 'admin') => void;
 }
+
+// Simplified Single-Card Clock Digit
+const FlipDigit: React.FC<{ digit: string }> = memo(({ digit }) => {
+    const [topDigit, setTopDigit] = useState(digit);
+    const [bottomDigit, setBottomDigit] = useState(digit);
+    const [isFlipping, setIsFlipping] = useState(false);
+    const timerRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (topDigit !== digit) {
+            if (timerRef.current) clearTimeout(timerRef.current);
+            setBottomDigit(digit);
+            setIsFlipping(true);
+
+            timerRef.current = window.setTimeout(() => {
+                setTopDigit(digit);
+                setIsFlipping(false);
+            }, 400); // Match animation duration
+        }
+    }, [digit, topDigit]);
+    
+    return (
+        <div className="digit-card">
+            <span className={`digit-top ${isFlipping ? 'flipping' : ''}`}>{topDigit}</span>
+            <span className={`digit-bottom ${isFlipping ? 'flipping' : ''}`}>{bottomDigit}</span>
+        </div>
+    );
+});
+
 
 const Kiosk: React.FC<KioskProps> = ({ setView }) => {
     const [currentTime, setCurrentTime] = useState(new Date());
@@ -38,8 +67,10 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
     const [settings, setSettings] = useState<Settings | null>(null);
     
     const [authPurpose, setAuthPurpose] = useState<AuthPurpose>('attendance');
-    const [isLeaveStatusModalOpen, setIsLeaveStatusModalOpen] = useState(false);
+    const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
     const [authenticatedEmployee, setAuthenticatedEmployee] = useState<Employee | null>(null);
+    const [isOnLeaveModalOpen, setIsOnLeaveModalOpen] = useState(false);
+    const [currentLeaveDetails, setCurrentLeaveDetails] = useState<Leave | null>(null);
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const verificationIntervalRef = useRef<number | null>(null);
@@ -57,7 +88,9 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
     }, []);
 
     useEffect(() => {
-        const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+        const timer = setInterval(() => {
+            setCurrentTime(new Date());
+        }, 1000);
         return () => {
             clearInterval(timer);
             stopVerificationProcess();
@@ -90,8 +123,8 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
         setKioskView('selectingMethod');
     };
     
-    const handleLeaveStatusClick = () => {
-        setAuthPurpose('leaveStatus');
+    const handleProfileClick = () => {
+        setAuthPurpose('profile');
         setKioskView('selectingMethod');
     };
 
@@ -141,14 +174,42 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
         }
     };
     
-    const handleAuthSuccess = (employee: Employee) => {
+    const handleAuthSuccess = async (employee: Employee) => {
         stopVerificationProcess();
         if (authPurpose === 'attendance') {
-            handleAttendanceSuccess(employee);
-        } else {
+            await checkLeaveAndHandleAttendance(employee);
+        } else { // 'profile'
             setAuthenticatedEmployee(employee);
-            setIsLeaveStatusModalOpen(true);
+            setIsProfileModalOpen(true);
             setKioskView('main');
+        }
+    };
+
+    const checkLeaveAndHandleAttendance = async (employee: Employee) => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const q = query(
+            collection(db, 'leave'), 
+            where('employeeDocId', '==', employee.id),
+            where('endDate', '>=', Timestamp.fromDate(today))
+        );
+
+        const snapshot = await getDocs(q);
+        const activeLeave = snapshot.docs
+            .map(doc => doc.data() as Leave)
+            .find(l => {
+                const startDate = l.startDate.toDate();
+                startDate.setHours(0, 0, 0, 0);
+                return today >= startDate;
+            });
+
+        if (activeLeave) {
+            setCurrentLeaveDetails(activeLeave);
+            setIsOnLeaveModalOpen(true);
+            setKioskView('main');
+        } else {
+            await handleAttendanceSuccess(employee);
         }
     };
 
@@ -220,9 +281,9 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
             const employee = { id: querySnapshot.docs[0].id, ...querySnapshot.docs[0].data() } as Employee;
             
             setLoginMethod('pin');
-            handleAuthSuccess(employee);
             setIsPinModalOpen(false);
             setPinInput('');
+            await handleAuthSuccess(employee);
 
         } catch (error) {
             console.error("PIN login error:", error);
@@ -294,7 +355,8 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
     const renderKioskView = () => {
         switch(kioskView) {
             case 'main': {
-                const timeString = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                const timeString = currentTime.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
+                
                 return (
                      <div className="w-full h-full flex flex-col justify-center items-center text-center p-4 overflow-hidden">
                         <div className="opacity-0 animate-slide-down">
@@ -314,19 +376,17 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
                             {currentTime.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                         </p>
 
-                        <div 
-                            className="flex justify-center text-7xl md:text-9xl font-bold font-mono tracking-tighter my-2" 
-                            aria-label={timeString}>
-                             {timeString.split('').map((char, index) => (
-                                 <span
-                                     key={index}
-                                     className="opacity-0 animate-slide-in-right"
-                                     style={{ animationDelay: `${400 + index * 50}ms` }}
-                                     aria-hidden="true"
-                                 >
-                                     {char === ' ' ? '\u00A0' : char}
-                                 </span>
-                             ))}
+                        <div className="flex justify-center items-center text-7xl md:text-9xl font-bold font-mono tracking-tighter my-2 gap-x-1 sm:gap-x-2 flip-clock-container" aria-label={timeString}>
+                           {timeString.split('').map((char, index) =>
+                                char === ':' ? (
+                                    <span key={index} className="colon-separator">:</span>
+                                ) : (
+                                    <FlipDigit
+                                        key={index}
+                                        digit={char}
+                                    />
+                                )
+                            )}
                         </div>
 
                         <div className="mt-8 flex flex-col gap-4 w-full max-w-sm">
@@ -339,12 +399,12 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
                                 <span>LOG IN / LOG OUT</span>
                             </button>
                             <button 
-                                onClick={handleLeaveStatusClick} 
+                                onClick={handleProfileClick} 
                                 className="flex items-center justify-center gap-3 w-full px-8 md:px-16 py-3 md:py-4 bg-gray-700 hover:bg-gray-600 text-yellow-300 font-bold rounded-xl text-lg md:text-xl transition-transform transform hover:scale-105 opacity-0 animate-slide-up"
                                 style={{ animationDelay: '800ms' }}
                             >
-                                <Icons.Leave />
-                                <span>Check My Leave Status</span>
+                                <Icons.Profile />
+                                <span>Check My Profile</span>
                             </button>
                             <button 
                                 onClick={() => setView('admin')} 
@@ -429,7 +489,7 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
                             <ConfirmationCard 
                                 type={lastAction.log.type}
                                 name={lastAction.log.employeeName || "Unknown"}
-                                time={lastAction.log.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                time={lastAction.log.timestamp.toDate().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}
                                 showActions={lastAction.log.type === 'in'}
                                 onChangePinClick={() => setIsChangePinOpen(true)}
                                 onRequestLeaveClick={() => setIsLeaveRequestOpen(true)}
@@ -449,20 +509,29 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
         setPinError('');
         handleMethodSelect('face');
     };
-
-    const closeLeaveStatusModal = () => {
-        setIsLeaveStatusModalOpen(false);
-        setAuthenticatedEmployee(null);
-    }
+    
+    const closeOnLeaveModal = () => {
+        setIsOnLeaveModalOpen(false);
+        setCurrentLeaveDetails(null);
+    };
 
     return (
         <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center font-inter relative">
             {notification && <Toast message={notification.message} type={notification.type} onClose={() => setNotification(null)} />}
             {renderKioskView()}
-            {isLeaveStatusModalOpen && authenticatedEmployee && (
-                <LeaveStatusModal
+            {isProfileModalOpen && authenticatedEmployee && (
+                <EmployeeProfileModal
                     employee={authenticatedEmployee}
-                    onClose={closeLeaveStatusModal}
+                    onClose={() => {
+                        setIsProfileModalOpen(false);
+                        setAuthenticatedEmployee(null);
+                    }}
+                />
+            )}
+             {isOnLeaveModalOpen && currentLeaveDetails && (
+                <OnLeaveModal
+                    leave={currentLeaveDetails}
+                    onClose={closeOnLeaveModal}
                 />
             )}
             <PinModal 
@@ -490,6 +559,34 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
                 For assistance, please contact IT Support at extension 555
             </footer>
         </div>
+    );
+};
+
+const OnLeaveModal: React.FC<{ leave: Leave; onClose: () => void; }> = ({ leave, onClose }) => {
+    const returnDate = leave.endDate.toDate();
+    const today = new Date();
+    const daysLeft = Math.ceil((returnDate.getTime() - today.getTime()) / (1000 * 3600 * 24));
+
+    return (
+        <Modal isOpen={true} onClose={onClose} title="Login Denied">
+            <div className="text-center">
+                <div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-blue-500/10 mb-4">
+                    <Icons.CalendarX className="w-10 h-10 text-blue-400" />
+                </div>
+                <h3 className="text-2xl font-bold text-white mb-2">You are currently on leave.</h3>
+                <p className="text-gray-300">Your scheduled return date is:</p>
+                <p className="text-xl font-semibold text-yellow-400 my-2">{returnDate.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                <p className="text-gray-400">{daysLeft > 0 ? `${daysLeft} day${daysLeft > 1 ? 's' : ''} remaining.` : 'This is your last day.'}</p>
+                <div className="mt-8">
+                    <button
+                        onClick={onClose}
+                        className="px-8 py-2 bg-yellow-400 hover:bg-yellow-500 text-gray-900 rounded-lg font-semibold transition-colors"
+                    >
+                        Okay
+                    </button>
+                </div>
+            </div>
+        </Modal>
     );
 };
 
@@ -523,7 +620,7 @@ const ConfirmationCard: React.FC<{
                         </div>
                         <h2 className="text-4xl font-bold flex overflow-hidden py-1">
                             {'Goodbye'.split('').map((char, index) => (
-                                <span key={index} className="opacity-0 animate-letter-slide" style={{ animationDelay: `${300 + index * 50}ms` }}>
+                                <span key={index} className="animate-letter-slide" style={{ animationDelay: `${300 + index * 50}ms` }}>
                                     {char}
                                 </span>
                             ))}
