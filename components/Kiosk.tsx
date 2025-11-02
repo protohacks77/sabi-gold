@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../services/firebase';
-import { collection, getDocs, doc, updateDoc, addDoc, Timestamp, query, orderBy, limit, where } from 'firebase/firestore';
-import type { Employee, AttendanceLog, LeaveRequest } from '../types';
+import { collection, getDocs, doc, updateDoc, addDoc, Timestamp, query, orderBy, limit, where, getDoc } from 'firebase/firestore';
+import type { Employee, AttendanceLog, LeaveRequest, Settings } from '../types';
 import Spinner from './common/Spinner';
 import { Icons } from './common/Icons';
 import { loadModels, verifyFace } from '../services/faceRecognition';
@@ -9,6 +9,7 @@ import { verifyFingerprint, checkBiometricSupport } from '../services/fingerprin
 import Modal from './common/Modal';
 import Toast from './common/Toast';
 import LeaveStatusModal from './LeaveStatusModal';
+import { parseTimeString } from '../utils/time';
 
 type KioskView = 'main' | 'selectingMethod' | 'scanning' | 'confirmation';
 type LoginMethod = 'face' | 'fingerprint' | 'pin';
@@ -34,6 +35,7 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
     const [notification, setNotification] = useState<{ message: string; type: 'info' | 'error' | 'success' } | null>(null);
     const [loginMethod, setLoginMethod] = useState<LoginMethod | null>(null);
     const [pinModalReason, setPinModalReason] = useState<'failed' | 'unsupported' | null>(null);
+    const [settings, setSettings] = useState<Settings | null>(null);
     
     const [authPurpose, setAuthPurpose] = useState<AuthPurpose>('attendance');
     const [isLeaveStatusModalOpen, setIsLeaveStatusModalOpen] = useState(false);
@@ -45,6 +47,13 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
     useEffect(() => {
         loadModels();
         checkBiometricSupport().then(setIsFingerprintSupported);
+        const fetchSettings = async () => {
+            const settingsDoc = await getDoc(doc(db, 'app-settings', 'main'));
+            if (settingsDoc.exists()) {
+                setSettings(settingsDoc.data() as Settings);
+            }
+        };
+        fetchSettings();
     }, []);
 
     useEffect(() => {
@@ -151,7 +160,26 @@ const Kiosk: React.FC<KioskProps> = ({ setView }) => {
 
             const employeeRef = doc(db, 'employees', targetEmployee.id);
             const updatePayload: any = { status: newStatus };
-            if (isLoggingIn) updatePayload.lastLoginTime = Timestamp.now();
+            if (isLoggingIn) {
+                updatePayload.lastLoginTime = Timestamp.now();
+            } else { // It's a clock-out
+                if (settings && settings.shiftEnd) {
+                    const now = new Date();
+                    const shiftEnd = parseTimeString(settings.shiftEnd, now);
+                    if (now < shiftEnd) {
+                        const earlyMinutes = Math.round((shiftEnd.getTime() - now.getTime()) / 60000);
+                        await addDoc(collection(db, 'notifications'), {
+                            employeeId: targetEmployee.id,
+                            employeeName: `${targetEmployee.firstName} ${targetEmployee.surname}`,
+                            timestamp: Timestamp.now(),
+                            type: 'early-clock-out',
+                            message: `Clocked out ${earlyMinutes} minute${earlyMinutes !== 1 ? 's' : ''} early.`,
+                            read: false,
+                        });
+                    }
+                }
+            }
+
             await updateDoc(employeeRef, updatePayload);
             
             const newLog = {

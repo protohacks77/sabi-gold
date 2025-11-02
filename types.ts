@@ -61,3 +61,13 @@ export interface Settings {
   overtimeRate: number;
   annualLeaveDays?: number;
 }
+
+export interface Notification {
+  id?: string;
+  employeeId: string;
+  employeeName: string;
+  timestamp: Timestamp;
+  type: 'early-clock-out';
+  message: string;
+  read: boolean;
+}

@@ -7,9 +7,10 @@ import LeaveManagement from './dashboard/LeaveManagement';
 import LiveView from './dashboard/LiveView'; 
 import Help from './dashboard/Help';
 import { db, auth } from '../services/firebase';
-import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, onSnapshot, updateDoc, orderBy } from 'firebase/firestore';
 // FIX: Removed modular signOut import as it's not available. Using compat version instead.
 import { Icons } from './common/Icons';
+import type { Notification } from '../types';
 
 type Module = 'Dashboard' | 'Workforce' | 'Reports' | 'Administration' | 'Leave Management' | 'Settings' | 'Help';
 
@@ -20,6 +21,8 @@ interface AdminDashboardProps {
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
     const [activeModule, setActiveModule] = useState<Module>('Dashboard');
     const [pendingLeaveCount, setPendingLeaveCount] = useState(0);
+    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+    const [notifications, setNotifications] = useState<Notification[]>([]);
 
     useEffect(() => {
         const checkAndSetDefaultSettings = async () => {
@@ -36,12 +39,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
         };
         checkAndSetDefaultSettings();
         
-        const q = query(collection(db, "leave_requests"), where("status", "==", "pending"));
-        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const qLeave = query(collection(db, "leave_requests"), where("status", "==", "pending"));
+        const unsubLeave = onSnapshot(qLeave, (querySnapshot) => {
             setPendingLeaveCount(querySnapshot.size);
         });
+
+        const qNotifications = query(collection(db, "notifications"), where("read", "==", false));
+        const unsubNotifications = onSnapshot(qNotifications, (querySnapshot) => {
+            const fetchedNotifications = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
+            fetchedNotifications.sort((a, b) => b.timestamp.toMillis() - a.timestamp.toMillis());
+            setNotifications(fetchedNotifications);
+        });
         
-        return () => unsubscribe();
+        return () => { unsubLeave(); unsubNotifications(); };
     }, []);
 
     const renderModule = () => {
@@ -60,6 +70,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
     const handleLogout = async () => {
         // FIX: Use auth.signOut() from the compat library instead of the modular signOut().
         await auth.signOut();
+    };
+
+    const handleDismissNotification = async (id: string) => {
+        await updateDoc(doc(db, 'notifications', id), { read: true });
     };
 
     const navItems = [
@@ -99,11 +113,43 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
                     <NavButton module="Logout" icon={<Icons.Logout />} isActive={false} onClick={handleLogout} />
                 </div>
             </aside>
+            
+            <MobileMenu
+                isOpen={isMobileMenuOpen}
+                onClose={() => setIsMobileMenuOpen(false)}
+                navItems={navItems}
+                activeModule={activeModule}
+                setActiveModule={setActiveModule}
+                setView={setView}
+                handleLogout={handleLogout}
+            />
 
             <main className="flex-1 flex flex-col p-4 sm:p-6 lg:p-8 overflow-auto">
+                 {notifications.length > 0 && (
+                    <div className="mb-6 space-y-4">
+                        {notifications.map(notif => (
+                            <div key={notif.id} className="bg-red-900/50 border border-red-700 rounded-xl p-4 flex items-center justify-between gap-4 animate-fade-in">
+                                <div className="flex items-center gap-3">
+                                    <div className="text-red-400 flex-shrink-0">
+                                        <Icons.Warning />
+                                    </div>
+                                    <div>
+                                        <p className="font-semibold text-red-300">Early Clock-Out Alert</p>
+                                        <p className="text-sm text-red-400">{notif.employeeName} {notif.message}</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => handleDismissNotification(notif.id!)} className="p-1 rounded-full hover:bg-white/10 text-red-300 flex-shrink-0">
+                                    <Icons.X />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                 )}
                  <header className="flex justify-between items-center mb-6">
                     <h2 className="text-3xl font-bold text-white">{activeModule}</h2>
-                    <button onClick={() => setView('kiosk')} className="md:hidden px-4 py-2 bg-gray-700 text-yellow-400 rounded-lg text-sm">Kiosk View</button>
+                    <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden p-2 rounded-lg hover:bg-gray-700/50 text-gray-300" aria-label="Open menu">
+                        <Icons.Menu />
+                    </button>
                  </header>
                 <div className="animate-fade-in flex-grow">
                     {renderModule()}
@@ -113,6 +159,80 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ setView }) => {
                     <p>For assistance, please contact IT Support at extension 555</p>
                 </footer>
             </main>
+        </div>
+    );
+};
+
+const MobileMenu: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    navItems: { name: string, icon: React.ReactNode, badge?: number }[];
+    activeModule: Module;
+    setActiveModule: (module: Module) => void;
+    setView: (view: 'kiosk' | 'admin') => void;
+    handleLogout: () => void;
+}> = ({ isOpen, onClose, navItems, activeModule, setActiveModule, setView, handleLogout }) => {
+    if (!isOpen) return null;
+
+    const handleItemClick = (module: Module) => {
+        setActiveModule(module);
+        onClose();
+    };
+    
+    const handleKioskClick = () => {
+        setView('kiosk');
+        onClose();
+    };
+
+    const handleHelpClick = () => {
+        setActiveModule('Help');
+        onClose();
+    };
+
+    const handleLogoutClick = () => {
+        handleLogout();
+        onClose();
+    };
+
+    return (
+        <div 
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden animate-fade-in-fast"
+            onClick={onClose}
+        >
+            <aside 
+                className="fixed top-0 left-0 h-full w-64 bg-gray-900 flex flex-col z-50 animate-slide-in-left"
+                onClick={e => e.stopPropagation()}
+            >
+                <div className="flex items-center justify-between p-6 h-20 border-b border-gray-700/50">
+                    <div className="flex items-center gap-3">
+                        <Icons.LogoGold />
+                        <div>
+                            <h1 className="text-lg font-bold text-white">Sabi Gold Mine</h1>
+                            <p className="text-xs text-gray-400">Admin Portal</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-1 text-gray-400 hover:text-white">
+                        <Icons.X />
+                    </button>
+                </div>
+                <nav className="flex-1 flex flex-col space-y-1 p-4">
+                  {navItems.map(item => (
+                      <NavButton
+                          key={item.name}
+                          module={item.name as Module}
+                          icon={item.icon}
+                          isActive={activeModule === item.name}
+                          onClick={() => handleItemClick(item.name as Module)}
+                          badgeCount={item.badge}
+                      />
+                  ))}
+                </nav>
+                 <div className="p-4 border-t border-gray-700/50">
+                    <NavButton module="Kiosk View" icon={<Icons.KioskView />} isActive={false} onClick={handleKioskClick} />
+                    <NavButton module="Help" icon={<Icons.Help />} isActive={activeModule === 'Help'} onClick={handleHelpClick} />
+                    <NavButton module="Logout" icon={<Icons.Logout />} isActive={false} onClick={handleLogoutClick} />
+                </div>
+            </aside>
         </div>
     );
 };
