@@ -1,0 +1,7 @@
+{
+  "name": "Sabi Gold Mine Biometric Management System",
+  "description": "A comprehensive employee management application for Sabi Gold Mine, featuring an employee kiosk for biometric clock-in/out and an admin dashboard for real-time attendance tracking, payroll, and employee management.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
